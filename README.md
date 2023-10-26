@@ -8,10 +8,10 @@ It is responsible for routing requests from the frontend `prem-app` to either th
 ## Features
 
 - [x] API Gateway
-- [ ] Authentication/Authorization
+- [x] Authentication/Authorization
 - [x] Domain Management
 - [x] TLS
-- [ ] Rate Limiting
+- [x] Rate Limiting
 - [ ] Logging
 - [ ] Metrics
 
@@ -48,7 +48,7 @@ make down
 
 #### In order to restart services outside prem-gateway and to assign them with subdomain/tls certificate, use bellow command.
 ```bash
-make up LETSENCRYPT_PROD=true SERVICES=premd,premapp
+make up LETSENCRYPT_PROD=true
 ```
 
 #### Run prem-gateway with prem-app and prem-daemon:

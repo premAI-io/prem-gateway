@@ -24,27 +24,16 @@ const (
 
 	premappService = "premapp"
 	premdService   = "premd"
+	authdService   = "authd"
+	dnsdService    = "dnsd"
 )
 
 var (
 	letEncryptProd bool
+	services       = []string{premappService, premdService, authdService, dnsdService}
 )
 
-type DnsInfo struct {
-	Domain    string `json:"domain"`
-	SubDomain string `json:"sub_domain"`
-	NodeName  string `json:"node_name"`
-	Email     string `json:"email"`
-}
-
 func main() {
-	serviceNames := os.Getenv("SERVICES")
-	services := make([]string, 0)
-	if serviceNames != "" {
-		services = append(services, strings.Split(serviceNames, ",")...)
-	}
-	services = append(services, "dnsd")
-
 	letsEncrypt := os.Getenv("LETSENCRYPT_PROD")
 	if letsEncrypt != "" {
 		letEncryptProd = true
@@ -221,16 +210,10 @@ func restartServicesWithTls(domain string, services []string, premServices map[s
 		return fmt.Errorf("failed to create docker client: %v", err)
 	}
 
+	log.Infof("Restarting internal services: %v", services)
 	for _, v := range services {
 		switch v {
 		case premappService:
-			basicAuthMiddlewareLabelKey, basicAuthMiddlewareLabelValue, basicAuthName, err := getPremServiceBasicAuthInfo(ctx, cli)
-			if err != nil {
-				return err
-			}
-
-			// TODO handle restart of prem-gateway with dns exists
-
 			labels := map[string]string{
 				"traefik.enable":                                               "true",
 				"traefik.http.routers.premapp-http.rule":                       fmt.Sprintf("PathPrefix(`/`) && Host(`%s`)", domain),
@@ -239,16 +222,13 @@ func restartServicesWithTls(domain string, services []string, premServices map[s
 				"traefik.http.routers.premapp-https.entrypoints":               "websecure",
 				"traefik.http.routers.premapp-https.tls.certresolver":          "myresolver",
 				"traefik.http.middlewares.http-to-https.redirectscheme.scheme": "https",
-				"traefik.http.routers.premapp-http.middlewares":                fmt.Sprintf("http-to-https, %s", basicAuthName),
-				"traefik.http.routers.premapp-https.middlewares":               basicAuthName,
 				"traefik.http.services.premapp.loadbalancer.server.port":       "8080",
-				basicAuthMiddlewareLabelKey:                                    basicAuthMiddlewareLabelValue,
 			}
 
 			if err := restartContainer(ctx, cli, v, labels, nil); err != nil {
 				return fmt.Errorf("failed to restart container %s: %v", v, err)
 			}
-		default:
+		case authdService:
 			labels := map[string]string{
 				"traefik.enable": "true",
 				fmt.Sprintf("traefik.http.routers.%s.rule", v):             fmt.Sprintf("PathPrefix(`/`) && Host(`%s.%s`)", v, domain),
@@ -259,11 +239,25 @@ func restartServicesWithTls(domain string, services []string, premServices map[s
 			if err := restartContainer(ctx, cli, v, labels, nil); err != nil {
 				return fmt.Errorf("failed to restart container %s: %v", v, err)
 			}
+		case dnsdService, premdService:
+			labels := map[string]string{
+				"traefik.enable": "true",
+				fmt.Sprintf("traefik.http.routers.%s.rule", v):             fmt.Sprintf("PathPrefix(`/`) && Host(`%s.%s`)", v, domain),
+				fmt.Sprintf("traefik.http.routers.%s.entrypoints", v):      "websecure",
+				fmt.Sprintf("traefik.http.routers.%s.tls.certresolver", v): "myresolver",
+				fmt.Sprintf("traefik.http.routers.%s.middlewares", v):      "auth",
+				"traefik.http.middlewares.auth.forwardauth.address":        "http://authd:8080/auth/verify",
+			}
+
+			if err := restartContainer(ctx, cli, v, labels, nil); err != nil {
+				return fmt.Errorf("failed to restart container %s: %v", v, err)
+			}
 		}
 
 		log.Infof("Restarted container %s\n", v)
 	}
 
+	log.Infof("Restarting internal services: %v", premServices)
 	for k, v := range premServices {
 		labels := map[string]string{
 			"traefik.enable": "true",
@@ -275,6 +269,8 @@ func restartServicesWithTls(domain string, services []string, premServices map[s
 			"traefik.http.middlewares.http-to-https.redirectscheme.scheme":         "https",
 			fmt.Sprintf("traefik.http.routers.%s-http.middlewares", k):             "http-to-https",
 			fmt.Sprintf("traefik.http.services.%s.loadbalancer.server.port", k):    strconv.Itoa(v),
+			fmt.Sprintf("traefik.http.routers.%s-https.middlewares", k):            "auth",
+			"traefik.http.middlewares.auth.forwardauth.address":                    "http://authd:8080/auth/verify",
 		}
 
 		if err := restartContainer(ctx, cli, k, labels, nil); err != nil {
@@ -356,38 +352,4 @@ type PremService struct {
 		Header string `json:"header"`
 		SendTo string `json:"baseUrl"`
 	} `json:"invokeMethod"`
-}
-
-func getPremServiceBasicAuthInfo(
-	ctx context.Context, cli *client.Client,
-) (string, string, string, error) {
-	var (
-		basicAuthMiddlewareLabelKey   string
-		basicAuthMiddlewareLabelValue string
-		basicAuthName                 string
-	)
-
-	containerJson, err := cli.ContainerInspect(ctx, premappService)
-	if err != nil {
-		return "", "", "", fmt.Errorf("failed to inspect container %s: %v", premappService, err)
-	}
-
-	for k, v := range containerJson.Config.Labels {
-		if strings.Contains(k, "basicauth") {
-			basicAuthMiddlewareLabelKey = k
-			basicAuthMiddlewareLabelValue = v
-
-			parts := strings.Split(k, ".")
-			for i, part := range parts {
-				if part == "middlewares" && i+1 < len(parts) {
-					basicAuthName = parts[i+1]
-					break
-				}
-			}
-
-			return basicAuthMiddlewareLabelKey, basicAuthMiddlewareLabelValue, basicAuthName, nil
-		}
-	}
-
-	return "", "", "", nil
 }

@@ -1,15 +1,13 @@
-package httpdnsd
+package httpauthd
 
 import (
 	"context"
 	"github.com/gin-gonic/gin"
 	log "github.com/sirupsen/logrus"
-	swaggerFiles "github.com/swaggo/files"
-	ginSwagger "github.com/swaggo/gin-swagger"
 	"net/http"
-	"prem-gateway/dns/internal/core/application"
-	"prem-gateway/dns/internal/core/domain"
-	httphandler "prem-gateway/dns/internal/interface/http/handler"
+	"prem-gateway/auth/internal/core/application"
+	"prem-gateway/auth/internal/core/domain"
+	httphandler "prem-gateway/auth/internal/interface/http/handler"
 	"time"
 )
 
@@ -26,31 +24,34 @@ type Server interface {
 type server struct {
 	serverAddress string
 	opts          serverOptions
-	dnsHandler    httphandler.DNSHandler
-	dnsSvc        application.DnsService
+	authHandler   httphandler.AuthHandler
 }
 
 func NewServer(
 	serverAddress string,
 	repositorySvc domain.RepositoryService,
-	controllerDaemonUrl string,
+	adminUser string,
+	adminPass string,
+	rootKeyApiKey string,
 	opts ...ServerOption,
 ) (Server, error) {
-	options := defaultServerOptions(controllerDaemonUrl)
+	options := defaultServerOptions()
 	for _, o := range opts {
 		if err := o.apply(&options); err != nil {
 			return nil, err
 		}
 	}
 
-	dnsSvc, err := application.NewDnsService(
-		repositorySvc, options.ipSvc, options.controllerdWrapper,
+	apiKeySvc, err := application.NewApiKeyService(
+		context.Background(), rootKeyApiKey, repositorySvc,
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	dnsHandler, err := httphandler.NewDNSHandler(dnsSvc)
+	authSvc := application.NewAuthService(adminUser, adminPass, repositorySvc)
+
+	authHandler, err := httphandler.NewAuthHandler(apiKeySvc, authSvc)
 	if err != nil {
 		return nil, err
 	}
@@ -58,8 +59,7 @@ func NewServer(
 	return &server{
 		serverAddress: serverAddress,
 		opts:          options,
-		dnsHandler:    dnsHandler,
-		dnsSvc:        dnsSvc,
+		authHandler:   authHandler,
 	}, nil
 }
 
@@ -89,11 +89,11 @@ func (s *server) Start(ctx context.Context, stop context.CancelFunc) <-chan erro
 			errCh <- err
 		}
 
-		log.Info("prem-gateway dns daemon graceful shutdown completed")
+		log.Info("prem-gateway auth daemon graceful shutdown completed")
 	}()
 
 	go func() {
-		log.Infof("prem-gateway dns daemon listening and serving at: %v", s.serverAddress)
+		log.Infof("prem-gateway auth daemon listening and serving at: %v", s.serverAddress)
 
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- err
@@ -108,7 +108,7 @@ func (s *server) Stop() error {
 }
 
 func (s *server) Router() http.Handler {
-	ginEngine := gin.Default()
+	ginEngine := gin.New()
 	ginEngine.Use(gin.Recovery())
 	ginEngine.Use(func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "http://localhost:1420") // Replace with your frontend origin
@@ -121,14 +121,9 @@ func (s *server) Router() http.Handler {
 		c.Next()
 	})
 
-	ginEngine.POST("/dns", s.dnsHandler.CreateDnsInfo)
-	ginEngine.DELETE("/dns/:domain", s.dnsHandler.DeleteDnsInfo)
-	ginEngine.GET("/dns/:domain", s.dnsHandler.GetDnsInfo)
-	ginEngine.GET("/dns/status/:domain", s.dnsHandler.CheckDnsStatus)
-	ginEngine.GET("/dns/ip", s.dnsHandler.GetGatewayIp)
-	ginEngine.GET("/dns/check", s.dnsHandler.Check)
-	ginEngine.GET("/dns/existing", s.dnsHandler.GetExistingDns)
-	ginEngine.GET("/docs/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
-
+	ginEngine.GET("/auth/login", s.authHandler.LogIn)
+	ginEngine.GET("/auth/verify", s.authHandler.IsRequestAllowed)
+	ginEngine.POST("/auth/api-key", s.authHandler.CreateApiKey)
+	ginEngine.GET("/auth/api-key/service", s.authHandler.GetServiceApiKey)
 	return ginEngine
 }
