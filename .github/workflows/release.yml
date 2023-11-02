@@ -4,9 +4,7 @@ on: {push: {tags: ['*']}}
 
 jobs:
   build-and-push:
-    permissions:
-      packages: write-all
-      contents: read
+    permissions: write-all
     runs-on: ubuntu-latest
     env:
       DOCKER_CLI_EXPERIMENTAL: enabled
