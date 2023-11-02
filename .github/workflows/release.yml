@@ -5,7 +5,7 @@ on: {push: {tags: ['*']}}
 jobs:
   build-and-push:
     permissions:
-      packages: write
+      packages: write-all
       contents: read
     runs-on: ubuntu-latest
     env:
